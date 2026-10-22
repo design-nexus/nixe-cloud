@@ -93,6 +93,13 @@ with tempfile.TemporaryDirectory(prefix='nixe-cloud-test-') as d:
             webdav=result['id']; channel.close(); stream.close()
             assert 'test-password' not in call('ListRemotes')
             server.terminate(); server.wait(timeout=5)
+            call('Mount',webdav)
+            wait(lambda: next(x for x in json.loads(call('ListRemotes')) if x['id']==webdav)['connection']=='error')
+            server=serve('test-password'); wait(listening)
+            wait(lambda: next(x for x in json.loads(call('ListRemotes')) if x['id']==webdav)['mount_status']=='mounted',seconds=65)
+            call('Unmount',webdav)
+            wait(lambda: next(x for x in json.loads(call('ListRemotes')) if x['id']==webdav)['mount_status']=='unmounted')
+            server.terminate(); server.wait(timeout=5)
             server=serve('changed-password'); wait(listening)
             call('TestConnection',webdav)
             wait(lambda: next(x for x in json.loads(call('ListRemotes')) if x['id']==webdav)['connection']=='authentication_required')
@@ -100,7 +107,7 @@ with tempfile.TemporaryDirectory(prefix='nixe-cloud-test-') as d:
             assert (target/'sample.txt').exists()
         finally:
             server.terminate(); server.wait(timeout=5)
-        print('PASS: local WebDAV setup, password privacy and expired authentication')
+        print('PASS: local WebDAV setup, password privacy, network reconnection and expired authentication')
         print('PASS: discovery, adoption, fresh setup, permissions, FUSE read/write/rename/delete, safe unmount, configuration-only removal, staged reauthentication, mount-on-login startup')
     finally:
         for mount in (base/'data/nixe/cloud/mounts').glob('*'):

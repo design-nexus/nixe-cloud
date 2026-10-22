@@ -75,7 +75,8 @@ struct State {
     busy: Mutex<HashSet<String>>,
     rc: reqwest::Client,
     connection: zbus::Connection,
-    tasks: Mutex<HashMap<String, (String, tokio::task::AbortHandle)>>,
+    tasks: Mutex<HashMap<String, (String, &'static str, tokio::task::AbortHandle)>>,
+    desired_mounts: Mutex<HashSet<String>>,
 }
 impl State {
     async fn notify(&self) {
@@ -354,8 +355,29 @@ fn error(e: impl std::fmt::Display) -> zbus::fdo::Error {
 impl Cloud {
     async fn launch(&self, id: &str, kind: &'static str) -> zbus::fdo::Result<String> {
         self.0.get(id).await.map_err(error)?;
-        if !self.0.busy.lock().await.insert(id.into()) {
+        let already_busy = !self.0.busy.lock().await.insert(id.into());
+        if already_busy {
+            if kind == "mount" {
+                if let Some((operation, _)) =
+                    self.0
+                        .tasks
+                        .lock()
+                        .await
+                        .iter()
+                        .find(|(_, (account, operation_kind, _))| {
+                            account == id && *operation_kind == "mount"
+                        })
+                {
+                    return Ok(operation.clone());
+                }
+            }
             return Err(error("Account operation already in progress"));
+        }
+        if kind == "mount" {
+            self.0.desired_mounts.lock().await.insert(id.into());
+        }
+        if kind == "unmount" {
+            self.0.desired_mounts.lock().await.remove(id);
         }
         let op = uuid::Uuid::new_v4().to_string();
         let task_op = op.clone();
@@ -394,7 +416,7 @@ impl Cloud {
             .tasks
             .lock()
             .await
-            .insert(op.clone(), (account_id, handle.abort_handle()));
+            .insert(op.clone(), (account_id, kind, handle.abort_handle()));
         Ok(op)
     }
 }
@@ -405,7 +427,11 @@ impl Cloud {
         &self.0.version
     }
     async fn cancel(&self, operation: &str) -> zbus::fdo::Result<()> {
-        if let Some((id, handle)) = self.0.tasks.lock().await.remove(operation) {
+        let task = self.0.tasks.lock().await.remove(operation);
+        if let Some((id, kind, handle)) = task {
+            if kind == "mount" {
+                self.0.desired_mounts.lock().await.remove(&id);
+            }
             handle.abort();
             self.0.busy.lock().await.remove(&id);
             let is_mounted = self.0.get(&id).await.ok().is_some_and(|r| {
@@ -430,7 +456,16 @@ impl Cloud {
         Ok(())
     }
     async fn list_remotes(&self) -> zbus::fdo::Result<String> {
-        serde_json::to_string(&*self.0.remotes.lock().await).map_err(error)
+        let snapshot = self.0.remotes.lock().await.clone();
+        let mut public = Vec::with_capacity(snapshot.len());
+        for mut remote in snapshot {
+            if remote.mount_status == "mounted" && !mounted(&remote.mount_path).await {
+                remote.mount_status = "unmounted".into();
+                remote.connection = "disconnected".into();
+            }
+            public.push(remote);
+        }
+        serde_json::to_string(&public).map_err(error)
     }
     async fn discover(&self) -> zbus::fdo::Result<String> {
         serde_json::to_string(&self.0.discover().await.map_err(error)?).map_err(error)
@@ -508,6 +543,7 @@ impl Cloud {
                 .await
                 .map_err(error)?;
         }
+        self.0.desired_mounts.lock().await.remove(id);
         self.0.remotes.lock().await.retain(|r| r.id != id);
         self.0.save().await.map_err(error)?;
         self.0.notify().await;
@@ -755,6 +791,7 @@ async fn main() -> Result<()> {
             .build()?,
         connection: connection.clone(),
         tasks: Mutex::new(HashMap::new()),
+        desired_mounts: Mutex::new(HashSet::new()),
     });
     connection
         .object_server()
@@ -786,7 +823,7 @@ async fn main() -> Result<()> {
     });
     let monitor = state.clone();
     tokio::spawn(async move {
-        let mut retries: HashMap<String, u8> = HashMap::new();
+        let mut retries: HashMap<String, (u8, tokio::time::Instant)> = HashMap::new();
         loop {
             tokio::time::sleep(Duration::from_secs(10)).await;
             let mut children = monitor.children.lock().await;
@@ -817,13 +854,36 @@ async fn main() -> Result<()> {
                         "Cloud connection stopped unexpectedly. Retry connection.",
                     )
                     .await;
-                let attempts = retries.entry(id.clone()).or_default();
-                if *attempts < 3 {
-                    *attempts += 1;
-                    if monitor.test(&id).await.is_ok() {
-                        let _ = Cloud(monitor.clone()).launch(&id, "mount").await;
-                    }
+            }
+            let desired: Vec<_> = monitor
+                .desired_mounts
+                .lock()
+                .await
+                .iter()
+                .cloned()
+                .collect();
+            for id in desired {
+                if monitor.children.lock().await.contains_key(&id) {
+                    retries.remove(&id);
+                    continue;
                 }
+                let Ok(remote) = monitor.get(&id).await else {
+                    continue;
+                };
+                if remote.connection == "authentication_required"
+                    || monitor.busy.lock().await.contains(&id)
+                {
+                    continue;
+                }
+                let retry = retries
+                    .entry(id.clone())
+                    .or_insert((0, tokio::time::Instant::now()));
+                if retry.0 >= 5 || tokio::time::Instant::now() < retry.1 {
+                    continue;
+                }
+                retry.0 += 1;
+                retry.1 = tokio::time::Instant::now() + Duration::from_secs(10 * (1 << retry.0));
+                let _ = Cloud(monitor.clone()).launch(&id, "mount").await;
             }
         }
     });
