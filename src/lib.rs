@@ -20,6 +20,15 @@ impl Default for Preferences {
         }
     }
 }
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct NotesPreferences {
+    pub enabled: bool,
+    pub vault: String,
+    pub folder: String,
+}
+fn enabled_by_default() -> bool {
+    true
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Remote {
     pub id: String,
@@ -33,6 +42,12 @@ pub struct Remote {
     pub mount_path: String,
     pub error: String,
     pub preferences: Preferences,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default = "enabled_by_default")]
+    pub storage_enabled: bool,
+    #[serde(default)]
+    pub notes: NotesPreferences,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Discovery {
@@ -50,6 +65,15 @@ pub trait Cloud {
     fn list_remotes(&self) -> zbus::Result<String>;
     fn discover(&self) -> zbus::Result<String>;
     fn adopt(&self, name: &str) -> zbus::Result<String>;
+    fn import_remote(&self, name: &str) -> zbus::Result<String>;
+    fn configure_services(
+        &self,
+        id: &str,
+        account_id: &str,
+        storage: bool,
+        notes: &str,
+    ) -> zbus::Result<()>;
+    fn begin_notes(&self, id: &str) -> zbus::Result<String>;
     fn mount(&self, id: &str) -> zbus::Result<String>;
     fn unmount(&self, id: &str) -> zbus::Result<String>;
     fn test_connection(&self, id: &str) -> zbus::Result<String>;
@@ -99,6 +123,39 @@ impl Client {
             let c = zbus::Connection::session().await?;
             Ok(CloudProxy::new(&c).await?.adopt(name).await?)
         })
+    }
+    /// Copy authorization into Cloud's private config; leave the external config intact.
+    pub fn import_remote(&self, name: &str) -> anyhow::Result<String> {
+        self.runtime.block_on(async {
+            let c = zbus::Connection::session().await?;
+            Ok(CloudProxy::new(&c).await?.import_remote(name).await?)
+        })
+    }
+    pub fn configure_services(
+        &self,
+        id: &str,
+        account_id: Option<&str>,
+        storage: bool,
+        notes: &NotesPreferences,
+    ) -> anyhow::Result<()> {
+        let notes = serde_json::to_string(notes)?;
+        self.runtime.block_on(async {
+            let c = zbus::Connection::session().await?;
+            Ok(CloudProxy::new(&c)
+                .await?
+                .configure_services(id, account_id.unwrap_or(""), storage, &notes)
+                .await?)
+        })
+    }
+    pub fn notes_session(&self, id: &str) -> anyhow::Result<SetupSession> {
+        let path = self.runtime.block_on(async {
+            let c = zbus::Connection::session().await?;
+            anyhow::Ok(CloudProxy::new(&c).await?.begin_notes(id).await?)
+        })?;
+        let stream = std::os::unix::net::UnixStream::connect(path)?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(300)))?;
+        stream.set_write_timeout(Some(std::time::Duration::from_secs(300)))?;
+        Ok(SetupSession(std::io::BufReader::new(stream)))
     }
     pub fn mount(&self, id: &str) -> anyhow::Result<String> {
         self.runtime.block_on(async {

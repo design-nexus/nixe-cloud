@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use nixe_cloud::{BUS, Discovery, PATH, Preferences, Remote};
+use nixe_cloud::{BUS, Discovery, NotesPreferences, PATH, Preferences, Remote};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -490,6 +490,143 @@ impl Cloud {
         self.0.notify().await;
         Ok(id)
     }
+    async fn import_remote(&self, name: &str) -> zbus::fdo::Result<String> {
+        let _guard = self.0.setup_gate.lock().await;
+        if let Some(r) = self
+            .0
+            .remotes
+            .lock()
+            .await
+            .iter()
+            .find(|r| r.remote_name == name || r.name == name)
+            .cloned()
+        {
+            return Ok(r.id);
+        }
+        let path = external_config().ok_or_else(|| error("rclone configuration unavailable"))?;
+        let output = Command::new("rclone")
+            .arg("--config")
+            .arg(path)
+            .args(["config", "dump"])
+            .output()
+            .await
+            .map_err(error)?;
+        if !output.status.success() {
+            return Err(error("Unable to unlock the existing rclone configuration"));
+        }
+        let mut dump: Value = serde_json::from_slice(&output.stdout)
+            .map_err(|_| error("Invalid rclone configuration"))?;
+        let mut params = dump
+            .get_mut(name)
+            .map(Value::take)
+            .ok_or_else(|| error("Remote not found"))?;
+        let provider = params["type"]
+            .as_str()
+            .ok_or_else(|| error("Provider missing"))?
+            .to_owned();
+        params
+            .as_object_mut()
+            .ok_or_else(|| error("Invalid remote"))?
+            .remove("type");
+        let id = uuid::Uuid::new_v4().to_string();
+        let remote = format!("nixe_{}", uuid::Uuid::new_v4().simple());
+        self.0.rc("config/create", json!({"name":remote,"type":provider,"parameters":params,"opt":{"nonInteractive":true,"obscure":false}})).await.map_err(|_|error("Unable to import authorization"))?;
+        self.0
+            .remotes
+            .lock()
+            .await
+            .push(new_remote(&id, name, &remote, &provider, true));
+        if let Err(e) = self.0.save().await {
+            self.0.remotes.lock().await.retain(|r| r.id != id);
+            let _ = self.0.rc("config/delete", json!({"name":remote})).await;
+            return Err(error(e));
+        }
+        self.0.notify().await;
+        Ok(id)
+    }
+    async fn configure_services(
+        &self,
+        id: &str,
+        account_id: &str,
+        storage: bool,
+        notes: &str,
+    ) -> zbus::fdo::Result<()> {
+        let preferences: NotesPreferences = serde_json::from_str(notes).map_err(error)?;
+        if account_id.len() > 256 || account_id.chars().any(char::is_control) {
+            return Err(error("Invalid account identifier"));
+        }
+        if self.0.busy.lock().await.contains(id) {
+            return Err(error("Wait for the active connection operation"));
+        }
+        if preferences.enabled {
+            if !Path::new(&preferences.vault).is_absolute()
+                || !Path::new(&preferences.vault).is_dir()
+            {
+                return Err(error("Choose an existing local Notes vault"));
+            }
+            if !notes_path_valid(&preferences.folder) {
+                return Err(error("Choose a dedicated relative Notes folder"));
+            }
+        }
+        let old = self.0.get(id).await.map_err(error)?;
+        if !storage {
+            self.0.desired_mounts.lock().await.remove(id);
+            self.0.stop_mount(id).await.map_err(error)?;
+        }
+        {
+            let mut remotes = self.0.remotes.lock().await;
+            if !account_id.is_empty()
+                && remotes
+                    .iter()
+                    .any(|r| r.id != id && r.account_id.as_deref() == Some(account_id))
+            {
+                return Err(error("This account already has storage linked"));
+            }
+            if preferences.enabled
+                && remotes
+                    .iter()
+                    .any(|r| r.id != id && r.notes.enabled && r.notes.vault == preferences.vault)
+            {
+                return Err(error("This vault already has a sync account"));
+            }
+            let r = remotes
+                .iter_mut()
+                .find(|r| r.id == id)
+                .ok_or_else(|| error("Account removed"))?;
+            r.account_id = (!account_id.is_empty()).then(|| account_id.to_owned());
+            r.storage_enabled = storage;
+            r.notes = preferences;
+        }
+        if let Err(e) = self.0.save().await {
+            if let Some(r) = self.0.remotes.lock().await.iter_mut().find(|r| r.id == id) {
+                *r = old;
+            }
+            return Err(error(e));
+        }
+        self.0.notify().await;
+        Ok(())
+    }
+    async fn begin_notes(&self, id: &str) -> zbus::fdo::Result<String> {
+        let r = self.0.get(id).await.map_err(error)?;
+        if !r.notes.enabled {
+            return Err(error("Notes is disabled for this account"));
+        }
+        let path = runtime()
+            .map_err(error)?
+            .join(format!("notes-{}.sock", uuid::Uuid::new_v4()));
+        let listener = tokio::net::UnixListener::bind(&path).map_err(error)?;
+        tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .await
+            .map_err(error)?;
+        let state = self.0.clone();
+        let id = id.to_owned();
+        let cleanup = path.clone();
+        tokio::spawn(async move {
+            let _ = notes_session(state, id, listener).await;
+            let _ = tokio::fs::remove_file(cleanup).await;
+        });
+        Ok(path.to_string_lossy().into())
+    }
     async fn mount(&self, id: &str) -> zbus::fdo::Result<String> {
         self.launch(id, "mount").await
     }
@@ -585,6 +722,9 @@ fn new_remote(id: &str, display: &str, remote: &str, provider: &str, managed: bo
         mount_path: mounts().join(id).to_string_lossy().into(),
         error: String::new(),
         preferences: Preferences::default(),
+        account_id: None,
+        storage_enabled: true,
+        notes: NotesPreferences::default(),
     }
 }
 fn runtime() -> Result<PathBuf> {
@@ -653,6 +793,10 @@ async fn setup(state: Arc<State>, listener: tokio::net::UnixListener) -> Result<
                     let provider = request["provider"].as_str().context("Provider required")?;
                     let mut r = new_remote(&id, name, &remote, provider, true);
                     if let Some(prefs) = request.get("preferences") { r.preferences = serde_json::from_value(prefs.clone())?; }
+                    if let Some(account_id) = request["account_id"].as_str().filter(|id|!id.is_empty()) {
+                        if state.remotes.lock().await.iter().any(|r|r.account_id.as_deref()==Some(account_id)) {bail!("This account already has storage linked");}
+                        r.account_id=Some(account_id.into());
+                    }
                     if r.preferences.cache_mib == 0 { bail!("Invalid cache size"); }
                     state.remotes.lock().await.push(r);
                     let tested = tokio::select! {
@@ -700,6 +844,266 @@ async fn setup(state: Arc<State>, listener: tokio::net::UnixListener) -> Result<
             .await;
     }
     result
+}
+fn notes_path_valid(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= 2048
+        && !path.contains('\\')
+        && !path.contains(':')
+        && !path.chars().any(char::is_control)
+        && path
+            .split('/')
+            .all(|p| !p.is_empty() && p != "." && p != ".." && !p.starts_with('.'))
+}
+#[derive(Clone, Serialize, Deserialize)]
+struct NoteRevision {
+    id: String,
+    path: String,
+    parents: Vec<String>,
+    deleted: bool,
+}
+async fn notes_command(
+    state: &State,
+    remote: &Remote,
+    args: &[&str],
+    bytes: Option<Vec<u8>>,
+    limit: usize,
+) -> Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut command = state.command(remote)?;
+    command
+        .args(args)
+        .args([
+            "--contimeout",
+            "10s",
+            "--timeout",
+            "30s",
+            "--retries",
+            "1",
+            "--log-level",
+            "OFF",
+        ])
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .stdin(if bytes.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        });
+    let mut child = command.spawn()?;
+    let stdout = child.stdout.take().context("Notes output unavailable")?;
+    let input = child.stdin.take();
+    let work = async {
+        let writer = async {
+            if let (Some(mut input), Some(bytes)) = (input, bytes) {
+                input.write_all(&bytes).await?;
+                input.shutdown().await?;
+            }
+            anyhow::Ok(())
+        };
+        let reader = async {
+            let mut output = Vec::new();
+            stdout
+                .take((limit + 1) as u64)
+                .read_to_end(&mut output)
+                .await?;
+            if output.len() > limit {
+                bail!("Notes response exceeds safety limit");
+            }
+            anyhow::Ok(output)
+        };
+        let (_, output) = tokio::try_join!(writer, reader)?;
+        if !child.wait().await?.success() {
+            bail!("Notes connection failed. Check the account in Settings and retry.");
+        }
+        Ok(output)
+    };
+    tokio::time::timeout(Duration::from_secs(120), work).await?
+}
+async fn notes_snapshot(state: &State, r: &Remote) -> Result<Vec<NoteRevision>> {
+    let root = format!("{}:{}/revisions", r.remote_name, r.notes.folder);
+    // A missing folder is a fresh vault. Other failures must remain errors.
+    let mut command = state.command(r)?;
+    let output = command
+        .args([
+            "lsjson",
+            &root,
+            "--files-only",
+            "--max-depth",
+            "1",
+            "--contimeout",
+            "10s",
+            "--timeout",
+            "30s",
+            "--retries",
+            "1",
+            "--log-level",
+            "OFF",
+        ])
+        .kill_on_drop(true)
+        .stderr(std::process::Stdio::null())
+        .output();
+    let output = tokio::time::timeout(Duration::from_secs(60), output).await??;
+    if !output.status.success() {
+        if output.status.code() == Some(3) {
+            return Ok(Vec::new());
+        }
+        bail!("Notes folder unavailable. Check the account in Settings.");
+    }
+    if output.stdout.len() > 8 * 1024 * 1024 {
+        bail!("Notes revision index is too large");
+    }
+    let entries: Vec<Value> = serde_json::from_slice(&output.stdout)?;
+    if entries.len() > 10000 {
+        bail!("Notes revision limit reached; retained cloud versions are safe");
+    }
+    let mut result = Vec::new();
+    for entry in entries {
+        let Some(name) = entry["Name"].as_str().and_then(|n| n.strip_suffix(".json")) else {
+            continue;
+        };
+        if !id_valid(name) {
+            continue;
+        }
+        let path = format!("{root}/{name}.json");
+        let bytes = notes_command(state, r, &["cat", &path], None, 16384).await?;
+        let revision: NoteRevision = serde_json::from_slice(&bytes)?;
+        if revision.id != name
+            || !notes_path_valid(&revision.path)
+            || revision.parents.len() > 128
+            || revision.parents.iter().any(|p| !id_valid(p))
+        {
+            bail!("Invalid Notes revision");
+        }
+        result.push(revision);
+    }
+    Ok(result)
+}
+async fn notes_session(
+    state: Arc<State>,
+    id: String,
+    listener: tokio::net::UnixListener,
+) -> Result<()> {
+    use tokio::io::AsyncReadExt;
+    let (stream, _) = tokio::time::timeout(Duration::from_secs(60), listener.accept()).await??;
+    use std::os::unix::fs::MetadataExt;
+    if stream.peer_cred()?.uid() != std::fs::metadata(home())?.uid() {
+        bail!("Wrong Notes user");
+    }
+    let mut stream = BufReader::new(stream);
+    loop {
+        let mut line = Vec::new();
+        let count = tokio::time::timeout(
+            Duration::from_secs(300),
+            (&mut stream)
+                .take(160 * 1024 * 1024)
+                .read_until(b'\n', &mut line),
+        )
+        .await??;
+        if count == 0 {
+            break;
+        }
+        if line.last() != Some(&b'\n') {
+            bail!("Notes request too large");
+        }
+        let response: Result<Value> = async {
+            let request: Value = serde_json::from_slice(&line)?;
+            let r = state.get(&id).await?;
+            if !r.notes.enabled {
+                bail!("Notes is disabled");
+            }
+            match request["action"].as_str().unwrap_or("") {
+                "list" => Ok(serde_json::to_value(notes_snapshot(&state, &r).await?)?),
+                "get" => {
+                    let revision = request["id"]
+                        .as_str()
+                        .filter(|id| id_valid(id))
+                        .context("Invalid Notes revision")?;
+                    let path = request["path"]
+                        .as_str()
+                        .filter(|p| notes_path_valid(p))
+                        .context("Invalid Notes path")?;
+                    let object = format!(
+                        "{}:{}/content/{revision}/{path}",
+                        r.remote_name, r.notes.folder
+                    );
+                    let bytes =
+                        notes_command(&state, &r, &["cat", &object], None, 32 * 1024 * 1024)
+                            .await?;
+                    Ok(json!({"bytes":bytes}))
+                }
+                "put" => {
+                    let path = request["path"]
+                        .as_str()
+                        .filter(|p| notes_path_valid(p))
+                        .context("Invalid Notes path")?;
+                    let parents: Vec<String> = serde_json::from_value(request["parents"].clone())?;
+                    if parents.len() > 128 || parents.iter().any(|p| !id_valid(p)) {
+                        bail!("Invalid Notes parents");
+                    }
+                    let snapshot = notes_snapshot(&state, &r).await?;
+                    let referenced: HashSet<&str> = snapshot
+                        .iter()
+                        .filter(|r| r.path == path)
+                        .flat_map(|r| r.parents.iter().map(String::as_str))
+                        .collect();
+                    let mut heads: Vec<String> = snapshot
+                        .iter()
+                        .filter(|r| r.path == path && !referenced.contains(r.id.as_str()))
+                        .map(|r| r.id.clone())
+                        .collect();
+                    heads.sort();
+                    let mut expected = parents.clone();
+                    expected.sort();
+                    if heads != expected {
+                        bail!("Cloud note changed; synchronize and review the conflict");
+                    }
+                    let revision = uuid::Uuid::new_v4().to_string();
+                    let deleted = request["deleted"].as_bool().unwrap_or(false);
+                    if !deleted {
+                        let bytes: Vec<u8> = serde_json::from_value(request["bytes"].clone())?;
+                        if bytes.len() > 32 * 1024 * 1024 {
+                            bail!("Note exceeds safety limit");
+                        }
+                        let object = format!(
+                            "{}:{}/content/{revision}/{path}",
+                            r.remote_name, r.notes.folder
+                        );
+                        notes_command(&state, &r, &["rcat", &object], Some(bytes), 1024).await?;
+                    }
+                    let entry = NoteRevision {
+                        id: revision.clone(),
+                        path: path.into(),
+                        parents,
+                        deleted,
+                    };
+                    let object = format!(
+                        "{}:{}/revisions/{revision}.json",
+                        r.remote_name, r.notes.folder
+                    );
+                    notes_command(
+                        &state,
+                        &r,
+                        &["rcat", &object],
+                        Some(serde_json::to_vec(&entry)?),
+                        1024,
+                    )
+                    .await?;
+                    Ok(json!({"id":revision}))
+                }
+                _ => bail!("Unknown Notes action"),
+            }
+        }
+        .await;
+        let response = response.unwrap_or_else(|_|json!({"error":"Notes sync stopped. The account may be offline, disabled, or changed; retry synchronization. Existing versions are retained."}));
+        stream
+            .get_mut()
+            .write_all(&serde_json::to_vec(&response)?)
+            .await?;
+        stream.get_mut().write_all(b"\n").await?;
+    }
+    Ok(())
 }
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -799,7 +1203,7 @@ async fn main() -> Result<()> {
         .await?;
     let snapshot = state.remotes.lock().await.clone();
     for r in snapshot {
-        if r.preferences.mount_on_login {
+        if r.preferences.mount_on_login && r.storage_enabled {
             let _ = Cloud(state.clone()).launch(&r.id, "mount").await;
         }
     }

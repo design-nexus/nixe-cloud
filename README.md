@@ -101,3 +101,30 @@ It verifies discovery, adoption, fresh setup, permissions, multiple accounts,
 reauthentication, login mounting, FUSE reads/writes/rename/delete, safe disconnect,
 configuration-only removal, cancelled setup cleanup, local WebDAV onboarding,
 and expired authentication. No real accounts are read or changed.
+
+### Unified accounts and Notes
+
+`ImportRemote(name) -> UUID` copies an explicitly selected external remote into
+Cloud's private configuration so Settings can reauthorize it. The original rclone
+configuration is preserved. `ConfigureServices(id, account_id, storage, notes_json)`
+links a stable GOA ID, controls Files visibility, and configures Notes
+(`enabled`, absolute local `vault`, dedicated relative remote `folder`). Existing
+accounts default to Storage enabled. Credentials are never part of these fields.
+`BeginNotes(id) -> socket_path` opens a same-UID private Unix session, not a
+credential-bearing D-Bus interface. Disabled accounts reject subsequent requests.
+
+Notes sessions accept `list`, `get` (revision ID and relative path), and `put`
+(relative path, expected parent IDs, bytes, optional deleted flag). The dedicated
+folder contains `content/<UUID>/<original-path>` ordinary Markdown/attachments
+and `revisions/<UUID>.json` immutable revision records. Updates append revisions;
+concurrent writers retain separate heads instead of overwriting bytes. Deletes
+append tombstones and do not erase cloud history. This is intentionally different
+from a flat folder mirror: portable rclone backends cannot guarantee conditional
+replacement. Revisions are retained without automatic pruning; 10,000 records
+and 32 MiB per file bound this initial implementation. Existing WebDAV sync stays
+available in Notes for ordinary flat-folder synchronization.
+
+Settings is the account manager. Files only displays Storage-enabled accounts
+and offers connection preferences. Notes does not require Storage visibility or
+a FUSE mount. Disabling Storage safely disconnects any Files mount; pending uploads
+must finish first. Mount-on-login applies only to Storage-enabled accounts.
