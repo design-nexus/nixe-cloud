@@ -37,11 +37,15 @@ with tempfile.TemporaryDirectory(prefix='nixe-account-test-') as directory:
         assert len(request({'action':'list'}))==2
         assert bytes(request({'action':'get','id':first['id'],'path':'hello.md'})['bytes'])==b'# Hello\n'
         assert 'error'in request({'action':'put','path':'../escape','parents':[],'bytes':[]})
+        binary=os.environ.get('NIXE_NOTES_TEST_BINARY')
+        if binary:
+            test_env=os.environ.copy();test_env['NIXE_CLOUD_TEST_ID']=remote;test_env['NIXE_NOTES_TEST_ROOT']=str(vault)
+            subprocess.run([binary,'cloud_account_transport','--ignored','--nocapture'],env=test_env,check=True)
         notes['enabled']=False;call('ConfigureServices',remote,'google-test','false',json.dumps(notes))
         assert 'error'in request({'action':'list'})
         sock.close();stream.close()
         call('Remove',remote,'true');assert config.read_bytes()==original
-        assert len(list((target/'Notes/content').glob('*/*.md')))==2
+        assert len(list((target/'Notes/content').glob('*/*.md')))>=2
         print('PASS: managed import, unchanged external config, stable account link, Notes without Storage, immutable Markdown revisions, stale-write/traversal rejection, disable and data-preserving removal')
     finally:
         daemon.terminate();daemon.wait(timeout=15)

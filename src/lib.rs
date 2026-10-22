@@ -214,10 +214,13 @@ impl SetupSession {
         self.0.get_mut().write_all(b"\n")?;
         let mut line = String::new();
         self.0.read_line(&mut line)?;
-        let response: serde_json::Value = serde_json::from_str(&line)
-            .map_err(|_| anyhow::anyhow!("Cloud setup stopped. Retry adding the account."))?;
+        let response: serde_json::Value = serde_json::from_str(&line).map_err(|_| {
+            anyhow::anyhow!("Cloud request stopped. Check the account connection and retry.")
+        })?;
         if response.get("error").is_some() {
-            anyhow::bail!("Setup failed. Check account details and authorization.");
+            anyhow::bail!(
+                "Cloud request failed. Check account details, connection, and authorization."
+            );
         }
         Ok(response)
     }

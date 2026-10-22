@@ -861,6 +861,8 @@ struct NoteRevision {
     path: String,
     parents: Vec<String>,
     deleted: bool,
+    #[serde(default)]
+    size: u64,
 }
 async fn notes_command(
     state: &State,
@@ -1061,8 +1063,10 @@ async fn notes_session(
                     }
                     let revision = uuid::Uuid::new_v4().to_string();
                     let deleted = request["deleted"].as_bool().unwrap_or(false);
+                    let mut size = 0;
                     if !deleted {
                         let bytes: Vec<u8> = serde_json::from_value(request["bytes"].clone())?;
+                        size = bytes.len() as u64;
                         if bytes.len() > 32 * 1024 * 1024 {
                             bail!("Note exceeds safety limit");
                         }
@@ -1077,6 +1081,7 @@ async fn notes_session(
                         path: path.into(),
                         parents,
                         deleted,
+                        size,
                     };
                     let object = format!(
                         "{}:{}/revisions/{revision}.json",
