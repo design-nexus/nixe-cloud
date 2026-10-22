@@ -145,6 +145,11 @@ impl Client {
 }
 pub struct SetupSession(std::io::BufReader<std::os::unix::net::UnixStream>);
 impl SetupSession {
+    /// A separate handle lets UI cancellation interrupt an in-flight setup read.
+    pub fn cancellation_handle(&self) -> std::io::Result<std::os::unix::net::UnixStream> {
+        self.0.get_ref().try_clone()
+    }
+
     /// Requests and replies are deliberately never logged or included in error messages.
     pub fn request(&mut self, request: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         use std::io::{BufRead, Write};

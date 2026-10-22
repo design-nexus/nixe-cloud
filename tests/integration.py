@@ -23,7 +23,7 @@ with tempfile.TemporaryDirectory(prefix='nixe-cloud-test-') as d:
     subprocess.run(['rclone','config','create','external','alias','remote',str(target)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     external=base/'config/rclone/rclone.conf'; original=external.read_bytes()
     log=(base/'daemon.log').open('w+')
-    daemon=subprocess.Popen([str(ROOT/'target/debug/nixe-cloudd')], stdout=log, stderr=log)
+    daemon=subprocess.Popen([os.environ.get('NIXE_CLOUD_BIN',str(ROOT/'target/debug/nixe-cloudd'))], stdout=log, stderr=log)
     try:
         wait(lambda: call('ListRemotes')=='[]')
         discovered=json.loads(call('Discover')); assert discovered[0]['name']=='external'
@@ -47,11 +47,19 @@ with tempfile.TemporaryDirectory(prefix='nixe-cloud-test-') as d:
         assert result.get('id')==managed, result
         channel.close(); stream.close()
         assert len(json.loads(call('ListRemotes')))==2
+        # Cancelling an uncommitted account removes its temporary configuration.
+        channel=socket.socket(socket.AF_UNIX); channel.connect(call('BeginSetup')); stream=channel.makefile('rwb',buffering=0)
+        result=request({'action':'configure','provider':'alias','parameters':{'remote':str(target)}})
+        assert 'error' not in result
+        channel.close(); stream.close()
+        time.sleep(.3)
+        names=subprocess.check_output(['rclone','--config',str(base/'config/nixe/cloud/rclone.conf'),'listremotes'],text=True).splitlines()
+        assert len(names)==1, names
         conf=base/'config/nixe/cloud/rclone.conf'; assert conf.stat().st_mode & 0o077 == 0
         call('UpdatePreferences', managed, 'Fresh account', json.dumps({'mount_on_login':True,'cache_mib':64,'bandwidth':''}))
         # Login behavior is also startup behavior after service activation.
         daemon.terminate(); daemon.wait(timeout=15)
-        daemon=subprocess.Popen([str(ROOT/'target/debug/nixe-cloudd')], stdout=log, stderr=log)
+        daemon=subprocess.Popen([os.environ.get('NIXE_CLOUD_BIN',str(ROOT/'target/debug/nixe-cloudd'))], stdout=log, stderr=log)
         wait(lambda: call('ListRemotes'))
         rows=wait(lambda: (r if r['mount_status']=='mounted' else None) if (r:=next(x for x in json.loads(call('ListRemotes')) if x['id']==managed)) else None)
         mount=pathlib.Path(rows['mount_path']); assert (mount/'sample.txt').read_text()=='cloud test\n'
@@ -66,6 +74,33 @@ with tempfile.TemporaryDirectory(prefix='nixe-cloud-test-') as d:
         call('Remove', managed, 'true'); assert (target/'sample.txt').exists()
         call('Remove', account, 'false'); assert external.read_bytes()==original
         assert json.loads(call('ListRemotes'))==[]
+        # Real local WebDAV exercises password configuration and expired auth.
+        probe=socket.socket(); probe.bind(('127.0.0.1',0)); port=probe.getsockname()[1]; probe.close()
+        def serve(password):
+            return subprocess.Popen(['rclone','serve','webdav',str(target),'--addr',f'127.0.0.1:{port}','--user','tester','--pass',password], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        server=serve('test-password')
+        def listening():
+            try:
+                socket.create_connection(('127.0.0.1',port),timeout=.2).close(); return True
+            except OSError: return False
+        try:
+            wait(listening)
+            channel=socket.socket(socket.AF_UNIX); channel.connect(call('BeginSetup')); stream=channel.makefile('rwb',buffering=0)
+            result=request({'action':'configure','provider':'webdav','parameters':{'url':f'http://127.0.0.1:{port}','vendor':'other','user':'tester','pass':'test-password'}})
+            assert 'error' not in result, result
+            result=request({'action':'finish','provider':'webdav','name':'WebDAV test'})
+            assert 'id' in result, result
+            webdav=result['id']; channel.close(); stream.close()
+            assert 'test-password' not in call('ListRemotes')
+            server.terminate(); server.wait(timeout=5)
+            server=serve('changed-password'); wait(listening)
+            call('TestConnection',webdav)
+            wait(lambda: next(x for x in json.loads(call('ListRemotes')) if x['id']==webdav)['connection']=='authentication_required')
+            call('Remove',webdav,'true')
+            assert (target/'sample.txt').exists()
+        finally:
+            server.terminate(); server.wait(timeout=5)
+        print('PASS: local WebDAV setup, password privacy and expired authentication')
         print('PASS: discovery, adoption, fresh setup, permissions, FUSE read/write/rename/delete, safe unmount, configuration-only removal, staged reauthentication, mount-on-login startup')
     finally:
         for mount in (base/'data/nixe/cloud/mounts').glob('*'):

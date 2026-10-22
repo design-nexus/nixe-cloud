@@ -55,6 +55,8 @@ Object: `/io/github/design_nexus/nixe/Cloud1`.
 | Remove | UUID, delete-local-configuration boolean | — |
 | BeginSetup | — | private setup socket path |
 
+Read-only property: `RcloneVersion` reports the detected rclone version.
+
 Signals: `Changed()` and `OperationFinished(operation, account, success, message)`.
 Rust types in `src/lib.rs` define metadata/preferences. Consumers must tolerate
 unknown connection states and added JSON fields. Breaking changes require a new
@@ -97,4 +99,5 @@ dbus-run-session -- python3 tests/integration.py
 The check uses a temporary HOME/config/cache/runtime and disposable alias remotes.
 It verifies discovery, adoption, fresh setup, permissions, multiple accounts,
 reauthentication, login mounting, FUSE reads/writes/rename/delete, safe disconnect,
-and configuration-only removal. No real accounts are read or changed.
+configuration-only removal, cancelled setup cleanup, local WebDAV onboarding,
+and expired authentication. No real accounts are read or changed.

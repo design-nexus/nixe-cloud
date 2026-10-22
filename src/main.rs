@@ -68,6 +68,8 @@ struct Saved {
     remotes: Vec<Remote>,
 }
 struct State {
+    version: String,
+    setup_gate: Mutex<()>,
     remotes: Mutex<Vec<Remote>>,
     children: Mutex<HashMap<String, Child>>,
     busy: Mutex<HashSet<String>>,
@@ -398,6 +400,10 @@ impl Cloud {
 }
 #[interface(name = "io.github.design_nexus.nixe.Cloud1")]
 impl Cloud {
+    #[zbus(property)]
+    fn rclone_version(&self) -> &str {
+        &self.0.version
+    }
     async fn cancel(&self, operation: &str) -> zbus::fdo::Result<()> {
         if let Some((id, handle)) = self.0.tasks.lock().await.remove(operation) {
             handle.abort();
@@ -514,7 +520,7 @@ impl Cloud {
         let state = self.0.clone();
         let task_path = path.clone();
         tokio::spawn(async move {
-            let _ = tokio::time::timeout(Duration::from_secs(900), setup(state, listener)).await;
+            let _ = setup(state, listener).await;
             let _ = tokio::fs::remove_file(task_path).await;
         });
         Ok(path.to_string_lossy().into())
@@ -555,7 +561,8 @@ fn runtime() -> Result<PathBuf> {
 }
 // Setup is a single private session. Only configuration operations are allowed.
 async fn setup(state: Arc<State>, listener: tokio::net::UnixListener) -> Result<()> {
-    let (stream, _) = listener.accept().await?;
+    let (stream, _) = tokio::time::timeout(Duration::from_secs(900), listener.accept()).await??;
+    let _setup_guard = state.setup_gate.lock().await;
     let peer = stream.peer_cred()?;
     use std::os::unix::fs::MetadataExt;
     if peer.uid() != std::fs::metadata(home())?.uid() {
@@ -568,7 +575,7 @@ async fn setup(state: Arc<State>, listener: tokio::net::UnixListener) -> Result<
     let result: Result<()> = async {
         loop {
             let mut line = String::new();
-            if stream.read_line(&mut line).await? == 0 { break; }
+            if tokio::time::timeout(Duration::from_secs(900), stream.read_line(&mut line)).await?? == 0 { break; }
             if line.len() > 1024 * 1024 { bail!("Setup request too large"); }
             let request: Value = serde_json::from_str(&line)?;
             let response = match request["action"].as_str().unwrap_or("") {
@@ -585,13 +592,22 @@ async fn setup(state: Arc<State>, listener: tokio::net::UnixListener) -> Result<
                         let previous = state.rc("config/get", json!({"name":old.remote_name})).await?;
                         let mut merged = previous;
                         if let Some(values) = parameters.as_object() { for (key, value) in values { merged[key] = value.clone(); } }
+                        if let Some(values) = merged.as_object_mut() { values.remove("type"); }
                         merged["config_refresh_token"] = json!("true");
                         parameters = merged;
                     }
                     let mut body = json!({"name":remote,"type":provider,"parameters":parameters,"opt":{"nonInteractive":true,"obscure":replacement.is_none()}});
                     if let Some(opt) = request.get("opt") { body["opt"] = opt.clone(); body["opt"]["nonInteractive"] = json!(true); }
-                    let v = state.rc(if created { "config/update" } else { "config/create" }, body).await?;
-                    created = true; v
+                    let endpoint = if created { "config/update" } else { "config/create" };
+                    created = true;
+                    tokio::select! {
+                        result = state.rc(endpoint, body) => result?,
+                        peer = stream.fill_buf() => {
+                            let _ = peer?;
+                            let _ = state.rc("config/oauthstop", json!({})).await;
+                            bail!("Setup cancelled");
+                        }
+                    }
                 },
                 "oauth" => state.rc("config/oauthstatus", json!({})).await?,
                 "finish" => {
@@ -603,7 +619,11 @@ async fn setup(state: Arc<State>, listener: tokio::net::UnixListener) -> Result<
                     if let Some(prefs) = request.get("preferences") { r.preferences = serde_json::from_value(prefs.clone())?; }
                     if r.preferences.cache_mib == 0 { bail!("Invalid cache size"); }
                     state.remotes.lock().await.push(r);
-                    if let Err(e) = state.test(&id).await { state.remotes.lock().await.retain(|r| r.id != id); return Err(e); }
+                    let tested = tokio::select! {
+                        result = state.test(&id) => result,
+                        _ = stream.fill_buf() => Err(anyhow::anyhow!("Setup cancelled")),
+                    };
+                    if let Err(e) = tested { state.remotes.lock().await.retain(|r| r.id != id); return Err(e); }
                     let final_id = if let Some(old) = replacement.as_ref() {
                         let mut remotes = state.remotes.lock().await;
                         remotes.retain(|r| r.id != id);
@@ -611,10 +631,18 @@ async fn setup(state: Arc<State>, listener: tokio::net::UnixListener) -> Result<
                         current.remote_name = remote.clone(); current.name = name.into(); current.connection = "connected".into(); current.error.clear();
                         old.id.clone()
                     } else { id };
-                    state.save().await?; state.notify().await;
+                    if let Err(e) = state.save().await {
+                        let mut remotes = state.remotes.lock().await;
+                        if let Some(old) = replacement.as_ref() {
+                            if let Some(current) = remotes.iter_mut().find(|r| r.id == old.id) { *current = old.clone(); }
+                        } else { remotes.retain(|r| r.id != final_id); }
+                        return Err(e);
+                    }
+                    created = false;
+                    state.notify().await;
                     if let Some(old) = replacement.as_ref() { let _ = state.rc("config/delete", json!({"name":old.remote_name})).await; }
                     stream.get_mut().write_all(format!("{}\n", json!({"id":final_id})).as_bytes()).await?;
-                    created = false; break;
+                    break;
                 },
                 _ => bail!("Unknown setup action"),
             };
@@ -628,6 +656,7 @@ async fn setup(state: Arc<State>, listener: tokio::net::UnixListener) -> Result<
     if created {
         let _ = state.rc("config/delete", json!({"name":remote})).await;
     }
+    state.notify().await;
     if result.is_err() {
         let _ = stream
             .get_mut()
@@ -705,7 +734,18 @@ async fn main() -> Result<()> {
         r.mount_status = "unmounted".into();
         r.error.clear();
     }
+    let version_output = Command::new("rclone").arg("version").output().await?;
+    if !version_output.status.success() {
+        bail!("Unable to detect rclone version");
+    }
+    let version = String::from_utf8_lossy(&version_output.stdout)
+        .lines()
+        .next()
+        .unwrap_or("rclone")
+        .to_owned();
     let state = Arc::new(State {
+        version,
+        setup_gate: Mutex::new(()),
         remotes: Mutex::new(remotes),
         children: Mutex::new(HashMap::new()),
         busy: Mutex::new(HashSet::new()),
