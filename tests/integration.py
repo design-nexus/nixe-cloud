@@ -4,6 +4,10 @@ import ast, json, os, pathlib, socket, subprocess, tempfile, time
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BUS = 'io.github.design_nexus.nixe.Cloud1'
 def call(method, *args):
+    owner=subprocess.check_output(['gdbus','call','--session','--dest','org.freedesktop.DBus','--object-path','/org/freedesktop/DBus','--method','org.freedesktop.DBus.NameHasOwner',BUS],text=True)
+    if not ast.literal_eval(owner)[0]:
+        raise subprocess.CalledProcessError(1,['Cloud service not ready'])
+
     out = subprocess.check_output(['gdbus', 'call', '--session', '--dest', BUS, '--object-path', '/io/github/design_nexus/nixe/Cloud1', '--method', BUS+'.'+method, *args], stderr=subprocess.PIPE, text=True)
     return ast.literal_eval(out)[0] if out.strip() != '()' else None
 def wait(predicate, seconds=35):
