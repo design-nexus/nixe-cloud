@@ -15,6 +15,12 @@ activation. It does not start or restart applications. Settings → Cloud Storag
 starts the service on demand. New accounts default to mounting when selected in
 Files; mount-on-login is opt-in per account.
 
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/design-nexus/nixe-cloud/main/install.sh | bash
+```
+
 ## Storage and ownership
 
 New accounts use `$XDG_CONFIG_HOME/nixe/cloud/rclone.conf` (0600). Account metadata

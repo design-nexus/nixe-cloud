@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Piped from curl (`curl -fsSL …/install.sh | bash`): no checkout here, so fetch
+# the source and run its installer from there.
+if [[ -z ${BASH_SOURCE[0]:-} ]]; then
+  command -v git >/dev/null || { echo "Git is needed to install nixe-cloud." >&2; exit 1; }
+  work=$(mktemp -d)
+  trap 'rm -rf "$work"' EXIT
+  git clone -q --depth 1 https://github.com/design-nexus/nixe-cloud.git "$work/src"
+  bash "$work/src/install.sh" "$@"
+  exit
+fi
 cd -- "$(dirname -- "$0")"
 cargo build --release --locked
 install -Dm755 target/release/nixe-cloudd "$HOME/.local/bin/nixe-cloudd.new"
