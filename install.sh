@@ -11,7 +11,8 @@ if [[ -z ${BASH_SOURCE[0]:-} ]]; then
   exit
 fi
 cd -- "$(dirname -- "$0")"
-cargo build --release --locked
+# A release archive (.prebuilt) brings its binaries.
+[[ -f .prebuilt ]] || cargo build --release --locked
 install -Dm755 target/release/nixe-cloudd "$HOME/.local/bin/nixe-cloudd.new"
 mv -f "$HOME/.local/bin/nixe-cloudd.new" "$HOME/.local/bin/nixe-cloudd"
 install -Dm644 data/nixe-cloud.service "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/nixe-cloud.service"

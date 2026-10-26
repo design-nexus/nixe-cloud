@@ -1,0 +1,19 @@
+{
+  "application": "cloud",
+  "directory": ".",
+  "packages": [
+    "nixe-cloud"
+  ],
+  "manifest": "Cargo.toml",
+  "prepare": [],
+  "binaries": [],
+  "test_commands": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "nixe-cloud"
+    ]
+  ]
+}

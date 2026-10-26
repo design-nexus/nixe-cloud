@@ -1,0 +1,32 @@
+# Builds, packages and publishes a release for the tag given.
+name: Standalone release
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version tag matching the application version
+        required: true
+        default: v0.1.0
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    container: archlinux@sha256:e43f1fd80e073992c5f173efbbbf65144170bf60aeb7369940087d63eacea8f4
+    env:
+      CARGO_BUILD_JOBS: '2'
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Prepare Git checkout
+        run: |
+          printf 'Server = https://archive.archlinux.org/repos/2026/10/20/$repo/os/$arch\n' > /etc/pacman.d/mirrorlist
+          pacman -Syyuu --noconfirm --needed git
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - name: Pinned build prerequisites
+        run: bash tools/ci-bootstrap.sh
+      - run: python3 tools/ci.py
+      - run: python3 tools/release.py --tag "$RELEASE_TAG" --publish
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
