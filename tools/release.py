@@ -19,7 +19,7 @@ assets=[archive,ROOT/'dist/CHANGELOG.md',provenance]
 if app=='git':assets+=sorted((ROOT/'dist').glob('*.pkg.tar.zst'))
 checksums=ROOT/'dist/SHA256SUMS';checksums.write_text(''.join(hashlib.sha256(f.read_bytes()).hexdigest()+'  '+f.name+'\n' for f in assets));assets.append(checksums)
 if a.publish:
- repo='design-nexus/nixe-'+app
+ repo='design-nexus/nyx-'+app
  exists=subprocess.run(['gh','release','view',a.tag,'--repo',repo],cwd=ROOT,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0
  if exists:raise SystemExit('Release already exists; do not replace published artifacts')
  run('gh','release','create',a.tag,*map(str,assets),'--repo',repo,'--target',revision,'--title',app+' '+a.tag,'--notes-file',str(ROOT/'dist/CHANGELOG.md'))

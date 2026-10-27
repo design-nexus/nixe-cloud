@@ -2,7 +2,7 @@
   "application": "cloud",
   "directory": ".",
   "packages": [
-    "nixe-cloud"
+    "nyx-cloud"
   ],
   "manifest": "Cargo.toml",
   "prepare": [],
@@ -13,7 +13,7 @@
       "test",
       "--locked",
       "-p",
-      "nixe-cloud"
+      "nyx-cloud"
     ]
   ]
 }

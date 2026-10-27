@@ -1,8 +1,8 @@
 //! Public Cloud1 metadata and asynchronous session-bus client. No credential fields.
 use serde::{Deserialize, Serialize};
 
-pub const BUS: &str = "io.github.design_nexus.nixe.Cloud1";
-pub const PATH: &str = "/io/github/design_nexus/nixe/Cloud1";
+pub const BUS: &str = "io.github.design_nexus.nyx.Cloud1";
+pub const PATH: &str = "/io/github/design_nexus/nyx/Cloud1";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Preferences {
@@ -56,9 +56,9 @@ pub struct Discovery {
 }
 
 #[zbus::proxy(
-    interface = "io.github.design_nexus.nixe.Cloud1",
-    default_service = "io.github.design_nexus.nixe.Cloud1",
-    default_path = "/io/github/design_nexus/nixe/Cloud1"
+    interface = "io.github.design_nexus.nyx.Cloud1",
+    default_service = "io.github.design_nexus.nyx.Cloud1",
+    default_path = "/io/github/design_nexus/nyx/Cloud1"
 )]
 pub trait Cloud {
     fn cancel(&self, operation: &str) -> zbus::Result<()>;

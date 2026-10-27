@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use nixe_cloud::{BUS, Discovery, NotesPreferences, PATH, Preferences, Remote};
+use nyx_cloud::{BUS, Discovery, NotesPreferences, PATH, Preferences, Remote};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -27,16 +27,16 @@ fn xdg(key: &str, fallback: &str) -> PathBuf {
         .unwrap_or_else(|| home().join(fallback))
 }
 fn config_dir() -> PathBuf {
-    xdg("XDG_CONFIG_HOME", ".config").join("nixe/cloud")
+    xdg("XDG_CONFIG_HOME", ".config").join("nyx/cloud")
 }
 fn config() -> PathBuf {
     config_dir().join("rclone.conf")
 }
 fn mounts() -> PathBuf {
-    xdg("XDG_DATA_HOME", ".local/share").join("nixe/cloud/mounts")
+    xdg("XDG_DATA_HOME", ".local/share").join("nyx/cloud/mounts")
 }
 fn cache(id: &str) -> PathBuf {
-    xdg("XDG_CACHE_HOME", ".cache").join("nixe/cloud").join(id)
+    xdg("XDG_CACHE_HOME", ".cache").join("nyx/cloud").join(id)
 }
 fn private_dir(path: &Path) -> Result<()> {
     std::fs::create_dir_all(path)?;
@@ -420,7 +420,7 @@ impl Cloud {
         Ok(op)
     }
 }
-#[interface(name = "io.github.design_nexus.nixe.Cloud1")]
+#[interface(name = "io.github.design_nexus.nyx.Cloud1")]
 impl Cloud {
     #[zbus(property)]
     fn rclone_version(&self) -> &str {
@@ -529,7 +529,7 @@ impl Cloud {
             .ok_or_else(|| error("Invalid remote"))?
             .remove("type");
         let id = uuid::Uuid::new_v4().to_string();
-        let remote = format!("nixe_{}", uuid::Uuid::new_v4().simple());
+        let remote = format!("nyx_{}", uuid::Uuid::new_v4().simple());
         self.0.rc("config/create", json!({"name":remote,"type":provider,"parameters":params,"opt":{"nonInteractive":true,"obscure":false}})).await.map_err(|_|error("Unable to import authorization"))?;
         self.0
             .remotes
@@ -731,7 +731,7 @@ fn runtime() -> Result<PathBuf> {
     let path = PathBuf::from(
         std::env::var_os("XDG_RUNTIME_DIR").context("User runtime directory unavailable")?,
     )
-    .join("nixe-cloud");
+    .join("nyx-cloud");
     private_dir(&path)?;
     Ok(path)
 }
@@ -745,7 +745,7 @@ async fn setup(state: Arc<State>, listener: tokio::net::UnixListener) -> Result<
         bail!("Wrong setup user");
     }
     let mut stream = BufReader::new(stream);
-    let remote = format!("nixe_{}", uuid::Uuid::new_v4().simple());
+    let remote = format!("nyx_{}", uuid::Uuid::new_v4().simple());
     let mut created = false;
     let mut replacement: Option<Remote> = None;
     let result: Result<()> = async {

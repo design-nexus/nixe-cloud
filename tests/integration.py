@@ -2,13 +2,13 @@
 """Run with dbus-run-session -- python3 tests/integration.py. No live accounts."""
 import ast, json, os, pathlib, socket, subprocess, tempfile, time
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-BUS = 'io.github.design_nexus.nixe.Cloud1'
+BUS = 'io.github.design_nexus.nyx.Cloud1'
 def call(method, *args):
     owner=subprocess.check_output(['gdbus','call','--session','--dest','org.freedesktop.DBus','--object-path','/org/freedesktop/DBus','--method','org.freedesktop.DBus.NameHasOwner',BUS],text=True)
     if not ast.literal_eval(owner)[0]:
         raise subprocess.CalledProcessError(1,['Cloud service not ready'])
 
-    out = subprocess.check_output(['gdbus', 'call', '--session', '--dest', BUS, '--object-path', '/io/github/design_nexus/nixe/Cloud1', '--method', BUS+'.'+method, *args], stderr=subprocess.PIPE, text=True)
+    out = subprocess.check_output(['gdbus', 'call', '--session', '--dest', BUS, '--object-path', '/io/github/design_nexus/nyx/Cloud1', '--method', BUS+'.'+method, *args], stderr=subprocess.PIPE, text=True)
     return ast.literal_eval(out)[0] if out.strip() != '()' else None
 def wait(predicate, seconds=35):
     until = time.monotonic()+seconds
@@ -19,7 +19,7 @@ def wait(predicate, seconds=35):
         except (subprocess.CalledProcessError, FileNotFoundError): pass
         time.sleep(.15)
     raise AssertionError('Timed out')
-with tempfile.TemporaryDirectory(prefix='nixe-cloud-test-') as d:
+with tempfile.TemporaryDirectory(prefix='nyx-cloud-test-') as d:
     base = pathlib.Path(d)
     for key, directory in [('HOME','home'),('XDG_CONFIG_HOME','config'),('XDG_DATA_HOME','data'),('XDG_CACHE_HOME','cache'),('XDG_RUNTIME_DIR','runtime')]:
         path=base/directory; path.mkdir(mode=0o700); os.environ[key]=str(path)
@@ -27,7 +27,7 @@ with tempfile.TemporaryDirectory(prefix='nixe-cloud-test-') as d:
     subprocess.run(['rclone','config','create','external','alias','remote',str(target)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     external=base/'config/rclone/rclone.conf'; original=external.read_bytes()
     log=(base/'daemon.log').open('w+')
-    daemon=subprocess.Popen([os.environ.get('NIXE_CLOUD_BIN',str(ROOT/'target/debug/nixe-cloudd'))], stdout=log, stderr=log)
+    daemon=subprocess.Popen([os.environ.get('NYX_CLOUD_BIN',str(ROOT/'target/debug/nyx-cloudd'))], stdout=log, stderr=log)
     try:
         wait(lambda: call('ListRemotes')=='[]')
         discovered=json.loads(call('Discover')); assert discovered[0]['name']=='external'
@@ -57,13 +57,13 @@ with tempfile.TemporaryDirectory(prefix='nixe-cloud-test-') as d:
         assert 'error' not in result
         channel.close(); stream.close()
         time.sleep(.3)
-        names=subprocess.check_output(['rclone','--config',str(base/'config/nixe/cloud/rclone.conf'),'listremotes'],text=True).splitlines()
+        names=subprocess.check_output(['rclone','--config',str(base/'config/nyx/cloud/rclone.conf'),'listremotes'],text=True).splitlines()
         assert len(names)==1, names
-        conf=base/'config/nixe/cloud/rclone.conf'; assert conf.stat().st_mode & 0o077 == 0
+        conf=base/'config/nyx/cloud/rclone.conf'; assert conf.stat().st_mode & 0o077 == 0
         call('UpdatePreferences', managed, 'Fresh account', json.dumps({'mount_on_login':True,'cache_mib':64,'bandwidth':''}))
         # Login behavior is also startup behavior after service activation.
         daemon.terminate(); daemon.wait(timeout=15)
-        daemon=subprocess.Popen([os.environ.get('NIXE_CLOUD_BIN',str(ROOT/'target/debug/nixe-cloudd'))], stdout=log, stderr=log)
+        daemon=subprocess.Popen([os.environ.get('NYX_CLOUD_BIN',str(ROOT/'target/debug/nyx-cloudd'))], stdout=log, stderr=log)
         wait(lambda: call('ListRemotes'))
         rows=wait(lambda: (r if r['mount_status']=='mounted' else None) if (r:=next(x for x in json.loads(call('ListRemotes')) if x['id']==managed)) else None)
         mount=pathlib.Path(rows['mount_path']); assert (mount/'sample.txt').read_text()=='cloud test\n'
@@ -114,7 +114,7 @@ with tempfile.TemporaryDirectory(prefix='nixe-cloud-test-') as d:
         print('PASS: local WebDAV setup, password privacy, network reconnection and expired authentication')
         print('PASS: discovery, adoption, fresh setup, permissions, FUSE read/write/rename/delete, safe unmount, configuration-only removal, staged reauthentication, mount-on-login startup')
     finally:
-        for mount in (base/'data/nixe/cloud/mounts').glob('*'):
+        for mount in (base/'data/nyx/cloud/mounts').glob('*'):
             subprocess.run(['fusermount3','-u',str(mount)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         daemon.terminate()
         try: daemon.wait(timeout=15)

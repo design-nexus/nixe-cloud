@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build/package one extracted Nixe app, preserving its installer/resource layout."""
+"""Build/package one extracted Nyx app, preserving its installer/resource layout."""
 import argparse
 import gzip
 import hashlib
@@ -29,8 +29,8 @@ def main():
     manifest = ROOT / spec['manifest']
     if not args.no_build:
         # Optional cache supplies native runtime binaries, never application source.
-        if spec['application'] == 'pulse' and os.environ.get('NIXE_NATIVE_CACHE'):
-            source = Path(os.environ['NIXE_NATIVE_CACHE']) / 'ntgcalls'
+        if spec['application'] == 'pulse' and os.environ.get('NYX_NATIVE_CACHE'):
+            source = Path(os.environ['NYX_NATIVE_CACHE']) / 'ntgcalls'
             destination = ROOT / 'target/native/ntgcalls'
             for name in ['lib/libntgcalls.so', 'THIRD_PARTY_NOTICES.md']:
                 if (source / name).exists() and not (destination / name).exists():
@@ -39,7 +39,7 @@ def main():
         for command in spec.get('prepare', []):
             run(*command)
         command = ['cargo', 'build', '--release', '--locked', '--manifest-path', str(manifest)]
-        for feature in os.environ.get('NIXE_BUILD_FEATURES', '').split(','):
+        for feature in os.environ.get('NYX_BUILD_FEATURES', '').split(','):
             if feature:
                 command += ['--features', feature]
         for package in spec['packages']:
@@ -69,7 +69,7 @@ def main():
                 raise RuntimeError(f'Missing native runtime resource {source}')
             resources['target/native/ntgcalls/' + name] = source
     if spec['application'] == 'git':
-        run('env', 'NIXE_SKIP_BUILD=1', 'bash', 'apps/git/packaging/build.sh')
+        run('env', 'NYX_SKIP_BUILD=1', 'bash', 'apps/git/packaging/build.sh')
         (ROOT / 'dist').mkdir(exist_ok=True)
         for source in (Path(metadata['target_directory']) / 'packages').glob('*.pkg.tar.zst'):
             resources['dist/' + source.name] = source
@@ -86,7 +86,7 @@ def main():
     build_info = {'revision': revision, 'application': spec['application'],
                   'rustc': run('rustc', '--version', capture=True),
                   'cargo': run('cargo', '--version', capture=True),
-                  'target': platform.machine(), 'features': os.environ.get('NIXE_BUILD_FEATURES', ''),
+                  'target': platform.machine(), 'features': os.environ.get('NYX_BUILD_FEATURES', ''),
                   'environment': json.loads((ROOT / 'build-environment.json').read_text())}
     (ROOT / 'dist').mkdir(exist_ok=True)
     (ROOT / 'dist/build-info.json').write_text(json.dumps(build_info, indent=2) + '\n')

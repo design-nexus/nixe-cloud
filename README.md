@@ -1,7 +1,7 @@
 # Cloud
 
 Shared, user-scoped rclone storage for Files and Settings. This repository builds
-`nixe-cloudd` and the public `nixe-cloud` Rust client library independently.
+`nyx-cloudd` and the public `nyx-cloud` Rust client library independently.
 Requires Rust, rclone (tested with 1.75.2), FUSE3, a session bus, and systemd user
 services. Normal operations require no root privileges.
 
@@ -18,22 +18,22 @@ Files; mount-on-login is opt-in per account.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/design-nexus/nixe-cloud/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/design-nexus/nyx-cloud/main/install.sh | bash
 ```
 
 ## Storage and ownership
 
-New accounts use `$XDG_CONFIG_HOME/nixe/cloud/rclone.conf` (0600). Account metadata
+New accounts use `$XDG_CONFIG_HOME/nyx/cloud/rclone.conf` (0600). Account metadata
 is alongside it. Existing rclone remotes are discovered without modification;
-explicit adoption adds Nixe mount preferences, without copying credentials or
+explicit adoption adds Nyx mount preferences, without copying credentials or
 changing their original configuration. External reauthentication/removal stays
 with the original configuration tool. Managed accounts can be reauthenticated
 in Settings: the new connection is staged and tested before replacing credentials.
 
-Stable mounts are `$XDG_DATA_HOME/nixe/cloud/mounts/<UUID>`. Their stable paths
+Stable mounts are `$XDG_DATA_HOME/nyx/cloud/mounts/<UUID>`. Their stable paths
 work with bookmarks and ordinary desktop apps; runtime socket paths are used
 only for IPC. Flatpak apps may need a file portal grant to access mounted files.
-Each account has an isolated `$XDG_CACHE_HOME/nixe/cloud/<UUID>` VFS cache.
+Each account has an isolated `$XDG_CACHE_HOME/nyx/cloud/<UUID>` VFS cache.
 The 2 GiB default is an eviction target, not a hard quota. Open or dirty files
 can exceed it. Full VFS caching allows sparse, partial reads where the renderer
 and provider support them.
@@ -47,8 +47,8 @@ background; rclone handles transient network reconnection within a live mount.
 
 ## Cloud1 public interface
 
-Bus/interface: `io.github.design_nexus.nixe.Cloud1`.
-Object: `/io/github/design_nexus/nixe/Cloud1`.
+Bus/interface: `io.github.design_nexus.nyx.Cloud1`.
+Object: `/io/github/design_nexus/nyx/Cloud1`.
 
 | Method | Input | Result |
 | --- | --- | --- |

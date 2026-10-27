@@ -1,0 +1,14 @@
+[Unit]
+Description=Cloud storage for Nyx applications
+
+[Service]
+Type=dbus
+BusName=io.github.design_nexus.nyx.Cloud1
+ExecStart=%h/.local/bin/nyx-cloudd
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+UMask=0077
+
+[Install]
+WantedBy=default.target

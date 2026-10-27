@@ -1,9 +1,9 @@
 [package]
-name = "nixe-cloud"
+name = "nyx-cloud"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/design-nexus/nixe-cloud"
+repository = "https://github.com/design-nexus/nyx-cloud"
 
 [dependencies]
 anyhow = "1"
@@ -15,5 +15,5 @@ reqwest = { version = "0.12", default-features = false, features = ["json"] }
 uuid = { version = "1", features = ["v4"] }
 
 [[bin]]
-name = "nixe-cloudd"
+name = "nyx-cloudd"
 path = "src/main.rs"
